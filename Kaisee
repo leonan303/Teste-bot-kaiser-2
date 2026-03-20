@@ -1,0 +1,715 @@
+// ============================================================
+//  👑 KAISER BOT - Blue Lock Edition
+//  Personagem: Michael Kaiser - Bastard München
+//  Motor: Baileys (@whiskeysockets/baileys)
+// ============================================================
+
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  downloadMediaMessage,
+  getContentType
+} = require('@whiskeysockets/baileys')
+
+const qrcode   = require('qrcode-terminal')
+const pino     = require('pino')
+const fs       = require('fs')
+const path     = require('path')
+const { exec } = require('child_process')
+const fetch    = require('node-fetch')
+const gtts     = require('gtts')
+
+// ─── Pasta temporária ────────────────────────────────────────
+const TMP = path.join(__dirname, 'tmp')
+if (!fs.existsSync(TMP)) fs.mkdirSync(TMP)
+
+const PREFIX = '!'
+
+// ─── Foto de perfil do Kaiser ────────────────────────────────
+const KAISER_FOTO_URL =
+  'https://static.wikia.nocookie.net/blue-lock/images/5/5b/Michael_Kaiser_anime_portrait.png'
+
+// ─── Frases arrogantes do Kaiser ─────────────────────────────
+const KAISER_FRASES = [
+  '👑 Eu sou o Imperador. Você deveria agradecer por eu ter respondido.',
+  '🌹 Bem-vindo à minha dimensão. Tente não se perder.',
+  '⚡ Kaiser Impact. Isso é tudo que você precisa saber.',
+  '🎭 Você é apenas um coadjuvante na minha história. Aceite seu papel.',
+  '👑 Eu não nasci pra ser sombra. Eu sou a luz.',
+  '🌹 Uma rosa azul — o impossível se tornando realidade. Isso sou eu.',
+  '🎯 Minha visão enxerga tudo no campo. Nada escapa ao Imperador.',
+  '💀 Adoro ver a expressão de desespero no rosto dos fracos.',
+  '👑 O time joga pra mim. Sempre foi assim e sempre será.',
+  '⚽ Kaiser Impact... Você nem viu de onde veio, viu?',
+  '🌹 Em todo o céu e na terra, apenas eu mereço ser protagonista.',
+  '😏 Você late igual um cachorro. Interessante, mas inútil.',
+  '👑 Eu sou o melhor. Não é arrogância. É um fato documentado.',
+  '🎭 Seja bem-vindo ao meu palco. Mas lembre-se: você é figurante.',
+  '⚡ Não existe segundo lugar no meu dicionário. Só existe Kaiser.',
+]
+
+const KAISER_ERROS = [
+  '❌ Que maldita incompetência. Isso não funcionou.',
+  '❌ Nem isso você consegue? Patético.',
+  '❌ Erro. Até meus inimigos fazem melhor que isso.',
+  '❌ Falhou. Que decepcionante... embora esperado.',
+  '❌ O Imperador não admite falhas. Tente de novo.',
+]
+
+const KAISER_BOAS_VINDAS = [
+  (n) => `👑 Ah, *${n}*. Finalmente apareceu.\nDigite *!menu* e tente não me decepcionar.`,
+  (n) => `🌹 *${n}*. Você entrou na minha dimensão.\nVeja o *!menu* — se conseguir acompanhar.`,
+  (n) => `⚡ *${n}*. Bem-vindo ao palco onde só eu sou protagonista.\nUse *!menu* para ver seus comandos... coadjuvante.`,
+  (n) => `😏 *${n}* apareceu. Esperava mais.\nDigite *!menu* e surpreenda-me.`,
+]
+
+const KAISER_PIADAS = [
+  '😏 Por que o Isagi foi ao médico? Porque toda vez que me vê, perde a cabeça.',
+  '👑 Sabe a diferença entre você e o Kaiser Impact? O Kaiser Impact chega.',
+  '🌹 Perguntaram ao Isagi: "Qual é seu maior medo?" Ele disse: "Kaiser." Inteligente.',
+  '😂 Por que o computador foi ao médico? Tinha vírus. Diferente de mim, que sou a própria cura.',
+  '🎭 Qual o animal mais arrogante? O Kaiser. Mas arrogância com talento é só um fato.',
+  '⚡ Por que eu nunca me perco? Porque o mundo gira ao meu redor.',
+  '😏 O Isagi tentou me roubar a bola. Tentou.',
+  '👑 Perguntaram quem é o melhor do mundo. O silêncio respondeu: Kaiser.',
+]
+
+// ─── Helpers ─────────────────────────────────────────────────
+function shell(cmd) {
+  return new Promise((res, rej) =>
+    exec(cmd, { maxBuffer: 1024 * 1024 * 50 }, (err, stdout, stderr) =>
+      err ? rej(stderr || err) : res(stdout)
+    )
+  )
+}
+
+const delay = ms => new Promise(r => setTimeout(r, ms))
+const rand  = arr => arr[Math.floor(Math.random() * arr.length)]
+
+function formatUptime() {
+  const s = Math.floor(process.uptime())
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`
+}
+
+// ─── Definir foto e nome do perfil ───────────────────────────
+async function definirPerfil(sock) {
+  try {
+    console.log('🌹 Definindo perfil do Kaiser...')
+    const res    = await fetch(KAISER_FOTO_URL)
+    const buffer = Buffer.from(await res.arrayBuffer())
+    const tmpPng = path.join(TMP, 'kaiser_pfp.png')
+    const tmpJpg = path.join(TMP, 'kaiser_pfp.jpg')
+    fs.writeFileSync(tmpPng, buffer)
+    await shell(`ffmpeg -y -i "${tmpPng}" -vf "scale=640:640:force_original_aspect_ratio=increase,crop=640:640" "${tmpJpg}"`)
+    await sock.updateProfilePicture(sock.user.id, { url: tmpJpg })
+    await sock.updateProfileName('Kaiser 👑')
+    console.log('✅ Perfil do Kaiser definido!')
+    try { fs.unlinkSync(tmpPng); fs.unlinkSync(tmpJpg) } catch {}
+  } catch (e) {
+    console.log('⚠️ Foto/nome não alterados:', e.message)
+  }
+}
+
+// ─── Conectar ────────────────────────────────────────────────
+async function conectar() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth')
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: 'silent' }),
+    browser: ['Kaiser Bot', 'Chrome', '1.0']
+  })
+
+  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.clear()
+      console.log('╔══════════════════════════════════════╗')
+      console.log('║  👑 KAISER BOT - Blue Lock Edition   ║')
+      console.log('║     Michael Kaiser · Bastard München  ║')
+      console.log('╚══════════════════════════════════════╝')
+      qrcode.generate(qr, { small: true })
+      console.log('📱 Escaneie o QR Code com seu WhatsApp!')
+      console.log('   ⋮ > Dispositivos conectados > Conectar dispositivo')
+    }
+    if (connection === 'open') {
+      console.log('✅ Kaiser entrou em campo!')
+      setTimeout(() => definirPerfil(sock), 3000)
+    }
+    if (connection === 'close') {
+      const reason = lastDisconnect?.error?.output?.statusCode
+      if (reason !== DisconnectReason.loggedOut) {
+        console.log('🔄 Kaiser está voltando...'); conectar()
+      } else {
+        console.log('🚪 Sessão encerrada. Delete a pasta "auth" e tente novamente.')
+      }
+    }
+  })
+
+  sock.ev.on('creds.update', saveCreds)
+
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return
+    for (const msg of messages) {
+      try { await processarMensagem(sock, msg) }
+      catch (e) { console.error('Erro:', e.message) }
+    }
+  })
+}
+
+// ─── Processador de mensagens ────────────────────────────────
+async function processarMensagem(sock, msg) {
+  if (!msg.message || msg.key.fromMe) return
+
+  const from     = msg.key.remoteJid
+  const isGroup  = from.endsWith('@g.us')
+  const pushName = msg.pushName || 'Coadjuvante'
+
+  const texto =
+    msg.message?.conversation ||
+    msg.message?.extendedTextMessage?.text ||
+    msg.message?.imageMessage?.caption ||
+    msg.message?.videoMessage?.caption || ''
+
+  const args    = texto.trim().split(/\s+/)
+  const cmd     = args[0]?.toLowerCase() || ''
+  const resto   = args.slice(1).join(' ')
+
+  if (!cmd.startsWith(PREFIX)) return
+  const comando = cmd.slice(PREFIX.length)
+
+  await sock.sendPresenceUpdate('composing', from)
+  await delay(600)
+
+  switch (comando) {
+
+    // ── PING ──────────────────────────────────────────────────
+    case 'ping':
+      await sock.sendMessage(from, {
+        text: `🏓 *Kaiser Impact* — resposta instantânea.\n_"Eu nunca perco tempo, nem em pings."_ 👑`
+      })
+      break
+
+    // ── MENU ──────────────────────────────────────────────────
+    case 'menu': case 'ajuda': case 'help':
+      await sock.sendMessage(from, { text: gerarMenu() })
+      break
+
+    // ── OI ────────────────────────────────────────────────────
+    case 'oi': case 'ola': case 'olá':
+      await sock.sendMessage(from, { text: rand(KAISER_BOAS_VINDAS)(pushName) })
+      break
+
+    // ── FRASE DO KAISER ───────────────────────────────────────
+    case 'kaiser': case 'frase': case 'quote':
+      await sock.sendMessage(from, { text: `👑 *Michael Kaiser diz:*\n\n${rand(KAISER_FRASES)}` })
+      break
+
+    // ── INFO ──────────────────────────────────────────────────
+    case 'info': case 'sobre':
+      await sock.sendMessage(from, {
+        text: `╔══════════════════════════════╗\n` +
+              `║   👑 KAISER BOT - INFO        ║\n` +
+              `╠══════════════════════════════╣\n` +
+              `║ Personagem: Michael Kaiser   ║\n` +
+              `║ Time: Bastard München        ║\n` +
+              `║ Posição: Atacante            ║\n` +
+              `║ Golpe: Kaiser Impact ⚡      ║\n` +
+              `║ Versão: 2.0                  ║\n` +
+              `║ Uptime: ${formatUptime().padEnd(20)}║\n` +
+              `╚══════════════════════════════╝\n\n` +
+              `_"Bem-vindo à minha dimensão."_ 🌹`
+      })
+      break
+
+    // ── STATUS ────────────────────────────────────────────────
+    case 'status': {
+      const mem = process.memoryUsage()
+      await sock.sendMessage(from, {
+        text: `📊 *Status do Kaiser Bot:*\n\n` +
+              `⏱️ Uptime: ${formatUptime()}\n` +
+              `💾 RAM: ${(mem.heapUsed / 1024 / 1024).toFixed(2)} MB\n` +
+              `📦 Node: ${process.version}\n\n` +
+              `_"O Imperador nunca para."_ 👑`
+      })
+      break
+    }
+
+    // ── STICKER ───────────────────────────────────────────────
+    case 'sticker': case 'fig': case 'figurinha': case 's': {
+      const quoted   = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+      const mediaMsg = quoted || msg.message
+
+      if (!mediaMsg?.imageMessage && !mediaMsg?.videoMessage) {
+        await sock.sendMessage(from, {
+          text: `🌹 *Kaiser explica:*\nEnvie uma *imagem* ou *vídeo* (até 10s) com *!sticker*\nOu responda uma mídia com o comando.\n_Simples. Até você consegue._`
+        })
+        break
+      }
+
+      const isVideo = !!mediaMsg.videoMessage
+      const buffer  = await downloadMediaMessage(
+        { message: mediaMsg, key: msg.key }, 'buffer', {},
+        { logger: pino({ level: 'silent' }) }
+      )
+      const ext    = isVideo ? 'mp4' : 'jpg'
+      const inFile = path.join(TMP, `stk_in.${ext}`)
+      const outFile = path.join(TMP, 'stk_out.webp')
+      fs.writeFileSync(inFile, buffer)
+
+      await sock.sendMessage(from, { text: `⏳ _Kaiser convertendo figurinha..._` })
+
+      if (isVideo) {
+        await shell(`ffmpeg -y -i "${inFile}" -t 10 -vf "scale=512:512:force_original_aspect_ratio=decrease,fps=15,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0" -loop 0 -an -vsync 0 "${outFile}"`)
+      } else {
+        await shell(`ffmpeg -y -i "${inFile}" -vf "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white@0" "${outFile}"`)
+      }
+
+      await sock.sendMessage(from, { sticker: fs.readFileSync(outFile) })
+      try { fs.unlinkSync(inFile); fs.unlinkSync(outFile) } catch {}
+      break
+    }
+
+    // ── STICKER COM TEXTO ─────────────────────────────────────
+    case 'stext': case 'figtext': {
+      if (!resto) {
+        await sock.sendMessage(from, { text: `✏️ *Uso:* !stext <texto>\n_Ex: !stext Kaiser Impact_` })
+        break
+      }
+      const imgF = path.join(TMP, 'stext.png')
+      const outF = path.join(TMP, 'stext.webp')
+      try {
+        await sock.sendMessage(from, { text: `⏳ _Criando figurinha..._` })
+        await shell(`ffmpeg -y -f lavfi -i "color=0x1a1a2e:size=512x512" -vf "drawtext=text='${resto.replace(/'/g, "\\'")}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2" -frames:v 1 "${imgF}"`)
+        await shell(`ffmpeg -y -i "${imgF}" "${outF}"`)
+        await sock.sendMessage(from, { sticker: fs.readFileSync(outF) })
+        try { fs.unlinkSync(imgF); fs.unlinkSync(outF) } catch {}
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) }) }
+      break
+    }
+
+    // ── STICKER → IMAGEM ──────────────────────────────────────
+    case 'toimg': case 'destig': {
+      const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+      if (!quoted?.stickerMessage) {
+        await sock.sendMessage(from, { text: `📌 Responda um *sticker* com *!toimg*\n_Isso é básico. Vamos lá._` })
+        break
+      }
+      const buf  = await downloadMediaMessage({ message: quoted, key: msg.key }, 'buffer', {}, { logger: pino({ level: 'silent' }) })
+      const inF  = path.join(TMP, 'stk2img.webp')
+      const outF = path.join(TMP, 'stk2img.png')
+      fs.writeFileSync(inF, buf)
+      await shell(`ffmpeg -y -i "${inF}" "${outF}"`)
+      await sock.sendMessage(from, { image: fs.readFileSync(outF), caption: `🖼️ _Kaiser converteu. De nada._` })
+      try { fs.unlinkSync(inF); fs.unlinkSync(outF) } catch {}
+      break
+    }
+
+    // ── YOUTUBE - VÍDEO ───────────────────────────────────────
+    case 'yt': case 'ytv': case 'youtube': {
+      if (!resto) { await sock.sendMessage(from, { text: `🎬 *Uso:* !yt <link ou nome do vídeo>` }); break }
+      await sock.sendMessage(from, { text: `⏳ _Kaiser buscando seu vídeo..._\n🎬 *${resto}*` })
+      try {
+        const out = path.join(TMP, 'yt_video.mp4')
+        if (fs.existsSync(out)) fs.unlinkSync(out)
+        const q = resto.startsWith('http') ? `"${resto}"` : `"ytsearch1:${resto}"`
+        await shell(`yt-dlp -f "best[ext=mp4][filesize<50M]/best[filesize<50M]" -o "${out}" ${q}`)
+        await sock.sendMessage(from, {
+          video: fs.readFileSync(out),
+          caption: `🎬 _Entregue pelo Imperador. Você está em dívida._`
+        })
+        try { fs.unlinkSync(out) } catch {}
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_Verifique o link ou tente outro nome._' }) }
+      break
+    }
+
+    // ── YOUTUBE - MP3 ─────────────────────────────────────────
+    case 'mp3': case 'musica': case 'ytmp3': {
+      if (!resto) { await sock.sendMessage(from, { text: `🎵 *Uso:* !mp3 <link ou nome>` }); break }
+      await sock.sendMessage(from, { text: `⏳ _Baixando áudio..._\n🎵 *${resto}*` })
+      try {
+        const out = path.join(TMP, 'yt_audio.mp3')
+        if (fs.existsSync(out)) fs.unlinkSync(out)
+        const q = resto.startsWith('http') ? `"${resto}"` : `"ytsearch1:${resto}"`
+        await shell(`yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${out}" ${q}`)
+        await sock.sendMessage(from, { audio: fs.readFileSync(out), mimetype: 'audio/mpeg', ptt: false })
+        try { fs.unlinkSync(out) } catch {}
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) }) }
+      break
+    }
+
+    // ── TIKTOK ────────────────────────────────────────────────
+    case 'tiktok': case 'tk': {
+      if (!resto?.startsWith('http')) { await sock.sendMessage(from, { text: `🎵 *Uso:* !tiktok <link>` }); break }
+      await sock.sendMessage(from, { text: `⏳ _Baixando TikTok..._` })
+      try {
+        const out = path.join(TMP, 'tiktok.mp4')
+        if (fs.existsSync(out)) fs.unlinkSync(out)
+        await shell(`yt-dlp -o "${out}" "${resto}"`)
+        await sock.sendMessage(from, { video: fs.readFileSync(out), caption: `🎵 _Kaiser Impact no TikTok._` })
+        try { fs.unlinkSync(out) } catch {}
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_Link válido?_' }) }
+      break
+    }
+
+    // ── INSTAGRAM ─────────────────────────────────────────────
+    case 'insta': case 'ig': case 'instagram': {
+      if (!resto?.startsWith('http')) { await sock.sendMessage(from, { text: `📸 *Uso:* !insta <link do post/reel>` }); break }
+      await sock.sendMessage(from, { text: `⏳ _Baixando Instagram..._` })
+      try {
+        const base = path.join(TMP, 'insta_media')
+        await shell(`yt-dlp -o "${base}.%(ext)s" "${resto}"`)
+        const files = fs.readdirSync(TMP).filter(f => f.startsWith('insta_media.'))
+        if (!files.length) throw new Error()
+        const file = path.join(TMP, files[0])
+        const isVid = ['mp4', 'mov', 'mkv'].includes(files[0].split('.').pop())
+        if (isVid) {
+          await sock.sendMessage(from, { video: fs.readFileSync(file), caption: `📸 _Entregue pelo Imperador._` })
+        } else {
+          await sock.sendMessage(from, { image: fs.readFileSync(file), caption: `📸 _Entregue pelo Imperador._` })
+        }
+        try { fs.unlinkSync(file) } catch {}
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_O link é público?_' }) }
+      break
+    }
+
+    // ── TTS ───────────────────────────────────────────────────
+    case 'tts': case 'falar': case 'audio': {
+      if (!resto) { await sock.sendMessage(from, { text: `🔊 *Uso:* !tts <texto>\n_Ex: !tts Eu sou o Imperador_` }); break }
+      await sock.sendMessage(from, { text: `🎙️ _Kaiser gravando áudio..._` })
+      try {
+        const out = path.join(TMP, 'tts.mp3')
+        const tts = new gtts(resto, 'pt')
+        await new Promise((res, rej) => tts.save(out, err => err ? rej(err) : res()))
+        await sock.sendMessage(from, { audio: fs.readFileSync(out), mimetype: 'audio/mpeg', ptt: true })
+        try { fs.unlinkSync(out) } catch {}
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) }) }
+      break
+    }
+
+    // ── PIADA ─────────────────────────────────────────────────
+    case 'piada': case 'joke':
+      await sock.sendMessage(from, { text: `😏 *Kaiser conta uma piada:*\n\n${rand(KAISER_PIADAS)}` })
+      break
+
+    // ── CEP ───────────────────────────────────────────────────
+    case 'cep': {
+      if (!resto) { await sock.sendMessage(from, { text: `📮 *Uso:* !cep <número>\n_Ex: !cep 01001000_` }); break }
+      const cepNum = resto.replace(/\D/g, '')
+      try {
+        const r = await fetch(`https://viacep.com.br/ws/${cepNum}/json/`)
+        const d = await r.json()
+        if (d.erro) throw new Error()
+        await sock.sendMessage(from, {
+          text: `📮 *CEP ${cepNum}:*\n\n🏠 ${d.logradouro || '-'}\n🏘️ ${d.bairro || '-'}\n🏙️ ${d.localidade} - ${d.uf}`
+        })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_CEP inválido._' }) }
+      break
+    }
+
+    // ── CLIMA ─────────────────────────────────────────────────
+    case 'clima': case 'tempo': {
+      if (!resto) { await sock.sendMessage(from, { text: `🌤️ *Uso:* !clima <cidade>` }); break }
+      try {
+        const r   = await fetch(`https://wttr.in/${encodeURIComponent(resto)}?format=j1`)
+        const d   = await r.json()
+        const cur = d.current_condition[0]
+        await sock.sendMessage(from, {
+          text: `🌤️ *Clima em ${resto}:*\n\n🌡️ Temp: *${cur.temp_C}°C* (sensação ${cur.FeelsLikeC}°C)\n☁️ ${cur.weatherDesc[0].value}\n💧 Umidade: ${cur.humidity}%\n💨 Vento: ${cur.windspeedKmph} km/h\n\n_"Até o tempo respeita o Imperador."_ 👑`
+        })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) }) }
+      break
+    }
+
+    // ── TRADUÇÃO ──────────────────────────────────────────────
+    case 'tr': case 'traduzir': {
+      const idioma = args[1] || 'en'
+      const txt    = args.slice(2).join(' ')
+      if (!txt) { await sock.sendMessage(from, { text: `🌐 *Uso:* !tr <idioma> <texto>\n_Ex: !tr en Eu sou o Imperador_` }); break }
+      try {
+        const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(txt)}&langpair=pt|${idioma}`)
+        const d = await r.json()
+        await sock.sendMessage(from, {
+          text: `🌐 *Tradução → ${idioma.toUpperCase()}:*\n\n📝 Original: ${txt}\n✅ Traduzido: ${d.responseData.translatedText}`
+        })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) }) }
+      break
+    }
+
+    // ── CÂMBIO ────────────────────────────────────────────────
+    case 'moeda': case 'cambio': {
+      const valor = parseFloat(args[1]) || 1
+      const de    = (args[2] || 'USD').toUpperCase()
+      const para  = (args[3] || 'BRL').toUpperCase()
+      try {
+        const r    = await fetch(`https://api.exchangerate-api.com/v4/latest/${de}`)
+        const d    = await r.json()
+        const taxa = d.rates[para]
+        if (!taxa) throw new Error()
+        await sock.sendMessage(from, {
+          text: `💱 *Câmbio:*\n\n${valor} ${de} = *${(valor * taxa).toFixed(2)} ${para}*\n📊 1 ${de} = ${taxa.toFixed(4)} ${para}`
+        })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_Moeda inválida?_' }) }
+      break
+    }
+
+    // ── WIKIPEDIA ─────────────────────────────────────────────
+    case 'wiki': case 'wikipedia': {
+      if (!resto) { await sock.sendMessage(from, { text: `📚 *Uso:* !wiki <tema>` }); break }
+      try {
+        const r = await fetch(`https://pt.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(resto)}`)
+        const d = await r.json()
+        if (!d.extract) throw new Error()
+        const txt = d.extract.length > 700 ? d.extract.substring(0, 700) + '...' : d.extract
+        await sock.sendMessage(from, {
+          text: `📚 *Wikipedia: ${d.title}*\n\n${txt}\n\n🔗 ${d.content_urls?.desktop?.page || ''}`
+        })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_Tema não encontrado._' }) }
+      break
+    }
+
+    // ── LETRA DE MÚSICA ───────────────────────────────────────
+    case 'letra': case 'lyrics': {
+      const partes  = resto.split('-')
+      const artista = partes[0]?.trim()
+      const musica  = partes[1]?.trim()
+      if (!artista || !musica) {
+        await sock.sendMessage(from, { text: `🎵 *Uso:* !letra Artista - Música` })
+        break
+      }
+      try {
+        const r = await fetch(`https://api.lyrics.ovh/v1/${encodeURIComponent(artista)}/${encodeURIComponent(musica)}`)
+        const d = await r.json()
+        if (!d.lyrics) throw new Error()
+        const letra = d.lyrics.length > 1500 ? d.lyrics.substring(0, 1500) + '\n...' : d.lyrics
+        await sock.sendMessage(from, { text: `🎵 *${musica} - ${artista}:*\n\n${letra}` })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_Letra não encontrada._' }) }
+      break
+    }
+
+    // ── CALCULADORA ───────────────────────────────────────────
+    case 'calc': case 'calcular': {
+      if (!resto) { await sock.sendMessage(from, { text: `🧮 *Uso:* !calc <expressão>\n_Ex: !calc 2+2*10_` }); break }
+      try {
+        const expr = resto.replace(/[^0-9+\-*/.() ]/g, '')
+        // eslint-disable-next-line no-new-func
+        const res  = new Function(`return ${expr}`)()
+        await sock.sendMessage(from, { text: `🧮 *${resto} = ${res}*\n_"Calculei na velocidade do Kaiser Impact."_ ⚡` })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) + '\n_Expressão inválida._' }) }
+      break
+    }
+
+    // ── IMC ───────────────────────────────────────────────────
+    case 'imc': {
+      const peso = parseFloat(args[1])
+      const alt  = parseFloat(args[2])
+      if (!peso || !alt) { await sock.sendMessage(from, { text: `⚖️ *Uso:* !imc <peso_kg> <altura_m>` }); break }
+      const imc = (peso / (alt * alt)).toFixed(2)
+      const cl  = imc < 18.5 ? '🔵 Abaixo do peso' : imc < 25 ? '🟢 Normal' : imc < 30 ? '🟡 Sobrepeso' : imc < 35 ? '🟠 Obesidade I' : '🔴 Obesidade II+'
+      await sock.sendMessage(from, {
+        text: `⚖️ *IMC:*\n\nPeso: ${peso}kg | Altura: ${alt}m\nIMC: *${imc}* — ${cl}\n\n_"Kaiser Impact tem 0% de gordura."_ 😏`
+      })
+      break
+    }
+
+    // ── ENCURTAR LINK ─────────────────────────────────────────
+    case 'encurtar': case 'link': {
+      if (!resto?.startsWith('http')) { await sock.sendMessage(from, { text: `🔗 *Uso:* !encurtar <url>` }); break }
+      try {
+        const r    = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(resto)}`)
+        const link = await r.text()
+        await sock.sendMessage(from, { text: `🔗 *Link encurtado:*\n${link}` })
+      } catch { await sock.sendMessage(from, { text: rand(KAISER_ERROS) }) }
+      break
+    }
+
+    // ── DADO ──────────────────────────────────────────────────
+    case 'dado': case 'dice': {
+      const lados = parseInt(args[1]) || 6
+      const res   = Math.floor(Math.random() * lados) + 1
+      await sock.sendMessage(from, {
+        text: `🎲 *Dado de ${lados} lados:* ${res}\n_"Não preciso de dado. Eu já sei o futuro."_ 👑`
+      })
+      break
+    }
+
+    // ── CARA OU COROA ─────────────────────────────────────────
+    case 'cara': case 'coin':
+      await sock.sendMessage(from, {
+        text: Math.random() < 0.5
+          ? `👑 *Coroa!* — O Imperador sempre cai de pé.`
+          : `🪙 *Cara!* — Até na moeda, minha cara aparece.`
+      })
+      break
+
+    // ── ALEATÓRIO ─────────────────────────────────────────────
+    case 'random': case 'numero': {
+      const min = parseInt(args[1]) || 1
+      const max = parseInt(args[2]) || 100
+      const n   = Math.floor(Math.random() * (max - min + 1)) + min
+      await sock.sendMessage(from, {
+        text: `🔢 Entre ${min} e ${max}: *${n}*\n_"Calculei antes de você perguntar."_ 👑`
+      })
+      break
+    }
+
+    // ── ARTE ──────────────────────────────────────────────────
+    case 'arte': {
+      const artes = [
+        `👑 ᕦ(ò_óˇ)ᕤ 🌹`,
+        `(ノ°▽°)ノ⌒✿`,
+        `¯\\_(ツ)_/¯`,
+        `(づ｡◕‿‿◕｡)づ`,
+        `⚡ ᕙ(⇀‸↼‶)ᕗ ⚡`,
+        `(ˆ▿ˆ) 👑`,
+        `🌹 (っ◔◡◔)っ ♥ 🌹`,
+      ]
+      await sock.sendMessage(from, { text: rand(artes) })
+      break
+    }
+
+    // ── HORA ──────────────────────────────────────────────────
+    case 'hora': case 'data':
+      await sock.sendMessage(from, {
+        text: `🕐 *Data e Hora (Brasília):*\n${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}\n\n_"Cada segundo é meu."_ 👑`
+      })
+      break
+
+    // ── MARCAR TODOS ──────────────────────────────────────────
+    case 'todos': case 'all': {
+      if (!isGroup) { await sock.sendMessage(from, { text: `❌ _Só funciona em grupos, maldito._` }); break }
+      const meta    = await sock.groupMetadata(from)
+      const members = meta.participants.map(p => p.id)
+      let txt = `👑 *${pushName} convoca todos por ordem do Imperador!*\n\n`
+      members.forEach(m => { txt += `@${m.split('@')[0]} ` })
+      await sock.sendMessage(from, { text: txt, mentions: members })
+      break
+    }
+
+    // ── GRUPO INFO ────────────────────────────────────────────
+    case 'grupo': case 'grupoinfo': {
+      if (!isGroup) { await sock.sendMessage(from, { text: `❌ _Grupos apenas, coadjuvante._` }); break }
+      const meta = await sock.groupMetadata(from)
+      await sock.sendMessage(from, {
+        text: `👥 *Info do Grupo:*\n\n📛 ${meta.subject}\n👤 Membros: ${meta.participants.length}\n📅 Criado: ${new Date(meta.creation * 1000).toLocaleDateString('pt-BR')}\n📝 ${meta.desc || 'Sem descrição'}`
+      })
+      break
+    }
+
+    // ── SORTEIO ───────────────────────────────────────────────
+    case 'sorteio': case 'sortear': {
+      if (!isGroup) { await sock.sendMessage(from, { text: `❌ _Só em grupos._` }); break }
+      const meta     = await sock.groupMetadata(from)
+      const sorteado = rand(meta.participants)
+      await sock.sendMessage(from, {
+        text: `🎉 *Sorteio do Kaiser:*\n\nO escolhido foi @${sorteado.id.split('@')[0]} 🏆\n_"O Imperador decidiu. Sem questionamentos."_`,
+        mentions: [sorteado.id]
+      })
+      break
+    }
+
+    // ── ENQUETE ───────────────────────────────────────────────
+    case 'enquete': {
+      const partes = resto.split('|').map(s => s.trim())
+      if (partes.length < 3) {
+        await sock.sendMessage(from, { text: `📊 *Uso:* !enquete Pergunta? | Opção 1 | Opção 2\n_Máximo 4 opções._` })
+        break
+      }
+      await sock.sendMessage(from, {
+        poll: { name: partes[0], values: partes.slice(1, 5), selectableCount: 1 }
+      })
+      break
+    }
+
+    // ── CHECAR FAKE NEWS ──────────────────────────────────────
+    case 'checar': case 'fake':
+      await sock.sendMessage(from, {
+        text: `🔍 *Kaiser verifica:*\n_"${resto || 'isso'}"_\n\n⚠️ Confirme em fontes sérias:\n• lupa.news\n• aosfatos.org\n• boatos.org\n• g1.globo.com/fato-ou-fake\n\n_"Mentira não dura. O Kaiser dura."_ 👑`
+      })
+      break
+
+    // ── INFO MÍDIA ────────────────────────────────────────────
+    case 'info_midia': {
+      const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+      if (!quoted) { await sock.sendMessage(from, { text: `📌 Responda uma mídia com *!info_midia*` }); break }
+      await sock.sendMessage(from, { text: `ℹ️ *Tipo:* ${getContentType(quoted) || 'Desconhecido'}` })
+      break
+    }
+
+    default:
+      break
+  }
+
+  await sock.sendPresenceUpdate('paused', from)
+}
+
+// ─── Menu Kaiser ─────────────────────────────────────────────
+function gerarMenu() {
+  return `╔══════════════════════════════════╗
+║   👑 KAISER BOT - Blue Lock      ║
+║  Michael Kaiser · Bastard München ║
+╚══════════════════════════════════╝
+
+_"Bem-vindo à minha dimensão."_ 🌹
+
+━━━ 📌 *GERAL* ━━━
+!ping        → Testar o Imperador
+!menu        → Este menu
+!info        → Sobre o bot
+!status      → RAM e Uptime
+!oi          → Saudação Imperial
+!hora        → Data e hora atual
+!kaiser      → Frase do Kaiser 👑
+
+━━━ 🖼️ *FIGURINHAS* ━━━
+!sticker / !s    → Foto ou vídeo → sticker
+!stext <txt>     → Texto → sticker
+!toimg           → Sticker → imagem
+
+━━━ 📥 *DOWNLOADS* ━━━
+!yt <link/nome>   → Vídeo YouTube
+!mp3 <link/nome>  → Áudio YouTube
+!tiktok <link>    → TikTok
+!insta <link>     → Instagram
+
+━━━ 🔊 *ÁUDIO* ━━━
+!tts <texto>   → Texto vira voz (PT)
+
+━━━ 🌐 *UTILIDADES* ━━━
+!cep <num>         → Buscar CEP
+!clima <cidade>    → Previsão do tempo
+!tr <lang> <txt>   → Traduzir texto
+!moeda V DE PARA   → Câmbio de moeda
+!encurtar <url>    → Encurtar link
+!wiki <tema>       → Wikipedia
+!letra Art - Mús   → Letra de música
+!calc <expressão>  → Calculadora
+!imc <peso> <alt>  → Calcular IMC
+
+━━━ 🎲 *DIVERSÃO* ━━━
+!piada        → Piada estilo Kaiser 😏
+!dado [N]     → Rolar dado (padrão 6)
+!cara         → Cara ou coroa
+!random M X   → Número entre M e X
+!arte         → Arte em emoji
+
+━━━ 👥 *GRUPOS* ━━━
+!todos           → Convocar todos
+!grupo           → Info do grupo
+!sorteio         → Sortear membro
+!enquete P|O1|O2 → Criar enquete
+
+━━━ 🔍 *EXTRAS* ━━━
+!checar <txt>   → Fontes anti fake news
+!info_midia     → Tipo de mídia
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👑 _"O time joga pra mim."_
+🌹 _"Kaiser Impact."_
+      — Michael Kaiser
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+}
+
+// ─── START ───────────────────────────────────────────────────
+console.log('👑 Kaiser está entrando em campo...')
+conectar()
